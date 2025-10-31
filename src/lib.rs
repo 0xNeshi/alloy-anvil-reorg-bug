@@ -41,6 +41,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_reorg() -> anyhow::Result<()> {
+        // configure Anvil to mint a block per each transaction
         let anvil = Anvil::new().try_spawn()?;
         let provider = ProviderBuilder::new()
             .wallet(anvil.wallet().unwrap())
@@ -122,9 +123,7 @@ mod tests {
             assert!(block.transactions.is_empty());
         }
 
-        // assert the number of logs in the whole chain
-        let log_filter = &Filter::new().from_block(0).to_block(last_event_block);
-
+        // reassert the number of logs in the whole chain
         let logs = provider.get_logs(log_filter).await?;
         assert_eq!(new_event_count, logs.len()); // FAIL: logs.len() somehow equals 0 (zero)
 
