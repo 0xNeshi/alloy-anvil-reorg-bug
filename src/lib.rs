@@ -62,9 +62,8 @@ mod tests {
             .expect("block should exist");
         assert_eq!(1, contract_deployment_block.transactions.len());
 
-        let last_event_block = contract_deployment_block.number() + event_count;
-
         // assert that each block has exactly 1 transaction
+        let last_event_block = contract_deployment_block.number() + event_count;
         for i in 2..=last_event_block {
             let block = provider
                 .get_block(i.into())
@@ -74,7 +73,7 @@ mod tests {
         }
 
         // assert the total number of logs in the whole chain
-        let log_filter = &Filter::new().from_block(0).to_block(last_event_block);
+        let log_filter = &Filter::new().from_block(0);
 
         let logs = provider.get_logs(log_filter).await?;
         assert_eq!(event_count, logs.len() as u64);
@@ -225,6 +224,78 @@ mod tests {
         // all the newly emitted logs + the 1 old log
         let logs = provider.get_logs(log_filter).await?;
         assert_eq!(new_event_count + 1, logs.len());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reorg_no_initial_logs() -> anyhow::Result<()> {
+        // configure Anvil to mint a block per each transaction
+        let anvil = Anvil::new().try_spawn()?;
+        let provider = ProviderBuilder::new()
+            .wallet(anvil.wallet().unwrap())
+            .connect(anvil.endpoint().as_str())
+            .await?;
+
+        let contract = TestCounter::deploy(provider.clone()).await?;
+
+        let contract_deployment_block = provider
+            .get_block(1.into())
+            .await?
+            .expect("block should exist");
+        assert_eq!(1, contract_deployment_block.transactions.len());
+
+        // mint empty blocks
+        let block_count = 5;
+        provider.anvil_mine(Some(block_count), None).await?;
+
+        // reorg the last 5 blocks, re-emitting only 3 events
+        let reorg_depth = block_count;
+        let new_event_count = 3;
+
+        let tx_block_pairs = (0..new_event_count)
+            .map(|_| {
+                let tx = contract.increase().into_transaction_request();
+                (TransactionData::JSON(tx), 0)
+            })
+            .collect();
+
+        let opts = ReorgOptions {
+            depth: reorg_depth,
+            tx_block_pairs,
+        };
+        provider.anvil_reorg(opts).await?;
+
+        // after the reorg, the block when contract was deployed should be unchanged
+        let post_reorg_contract_deployment_block = provider
+            .get_block(contract_deployment_block.number().into())
+            .await?
+            .expect("block should exist");
+        assert_eq!(
+            contract_deployment_block.hash(),
+            post_reorg_contract_deployment_block.hash()
+        );
+        assert_eq!(1, post_reorg_contract_deployment_block.transactions.len());
+
+        // the next block should contain all of the new transactions
+        let txs_block = provider
+            .get_block(2.into())
+            .await?
+            .expect("block should exist");
+        assert_eq!(new_event_count, txs_block.transactions.len());
+
+        // other blocks should contain no transactions
+        for i in 3..7 {
+            let block = provider
+                .get_block(i.into())
+                .await?
+                .expect("block should exist");
+            assert!(block.transactions.is_empty());
+        }
+
+        // assert the total number of logs in the whole chain
+        let logs = provider.get_logs(&Filter::new().from_block(0)).await?;
+        assert_eq!(new_event_count, logs.len()); // FAIL: logs.len() somehow equals 0 (zero)
 
         Ok(())
     }
